@@ -6,10 +6,6 @@ Streamlit application pour :
 - sélectionner par statut (multiselect) les produits à supprimer,
 - lancer la suppression avec barre de progression et logs,
 - télécharger un rapport Excel (removed + failed).
-
-Remarques :
-- Ne mettez pas votre token dans un dépôt public. Utilisez streamlit secrets en production.
-- Ajustez max_pages / delay si nécessaire pour respecter les rate limits.
 """
 import time
 import io
@@ -41,11 +37,6 @@ def iterate_products(base_url: str,
                      log_cb=None,
                      max_pages: int = 0,
                      delay_s: float = 0.0) -> List[Dict]:
-    """
-    Itère sur les pages à partir de base_url et retourne la liste complète d'items.
-    - max_pages: 0 => illimité; >0 => limite le nombre de pages à récupérer.
-    - delay_s: délai optionnel entre requêtes pour éviter les rate-limits.
-    """
     s = session or requests.Session()
     next_url = base_url
     items_acc: List[Dict] = []
@@ -97,9 +88,6 @@ def iterate_products(base_url: str,
 
 
 def summarize_states(items: List[Dict]) -> Tuple[pd.DataFrame, Counter]:
-    """
-    Retourne (DataFrame(Skus, State), Counter(states))
-    """
     rows = []
     counts = Counter()
     for it in items:
@@ -112,9 +100,6 @@ def summarize_states(items: List[Dict]) -> Tuple[pd.DataFrame, Counter]:
 
 
 def post_remove_sku(sku: str, token: str, session: Optional[requests.Session] = None) -> Tuple[bool, int, str]:
-    """
-    Envoie la requête POST pour retirer un produit. Retourne (success, status_code, response_text).
-    """
     s = session or requests.Session()
     url_post = "https://api-merchant.joom.com/api/v3/products/remove"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
@@ -139,21 +124,19 @@ def df_to_excel_bytes(df: pd.DataFrame, summary_counts: pd.DataFrame = None) -> 
 # -----------------------
 # Streamlit UI
 # -----------------------
-st.set_page_config(page_title="Gestion offres Joom — suppression par statut", layout="wide")
-st.title("Gestion offres Joom — extraction & suppression par statut")
+st.set_page_config(page_title="Joom - Suppression offres", layout="wide")
+st.title("Suppression des offres Joom selon leur statut")
 
 # Sidebar : paramètres
 st.sidebar.header("Paramètres API & options")
 default_url = "https://api-merchant.joom.com/api/v3/products/multi?limit=500"
 base_url = st.sidebar.text_input("Base URL (API)", value=default_url)
-token = st.sidebar.text_area("Token API (Bearer)", value="", height=140,
-                             help="Ne mettez pas de token sensible dans un dépôt public. Utilisez streamlit secrets en production.")
+token = st.sidebar.text_area("Token API (Bearer)", value="", height=140)
 preserve_cache = st.sidebar.checkbox("Utiliser cache session (même URL+token)", value=True)
 max_pages = st.sidebar.number_input("Max pages à récupérer (0 = illimité)", min_value=0, value=0, step=1)
 delay_s = st.sidebar.number_input("Delay entre requêtes (s)", min_value=0.0, value=0.0, step=0.1)
 limit_preview = st.sidebar.number_input("Max lignes aperçu", min_value=5, max_value=5000, value=200, step=5)
 st.sidebar.markdown("---")
-st.sidebar.markdown("Conseil : évitez de coller un token dans un espace partagé.")
 
 # session_state initialisation
 if "logs" not in st.session_state:
@@ -165,13 +148,12 @@ if "last_df" not in st.session_state:
 if "last_counts" not in st.session_state:
     st.session_state["last_counts"] = Counter()
 
-# zone logs
-log_placeholder = st.empty()
-
+# NOTE: We no longer create or update the text_area UI from the log() function.
+# log() only appends to st.session_state["logs"]. The single text_area is rendered once at the end.
 
 def log(msg: str):
+    """Append a log message to session state (no UI calls here)."""
     st.session_state["logs"] += msg + "\n"
-    log_placeholder.text_area("Logs", value=st.session_state["logs"], height=260)
 
 
 # Controls
@@ -203,6 +185,7 @@ if run_extract:
             counts = Counter(df["State"].tolist())
             st.session_state["last_df"] = df.copy()
             st.session_state["last_counts"] = counts
+            log(f"Restored {len(df)} rows from cache.")
         else:
             st.info("Lancement de l'extraction depuis l'API...")
             st.session_state["logs"] = ""  # reset logs per run
@@ -211,7 +194,6 @@ if run_extract:
             try:
                 items = iterate_products(base_url, token, session=requests.Session(), log_cb=log, max_pages=int(max_pages), delay_s=float(delay_s))
                 df, counts = summarize_states(items)
-                # sauvegarde durable pour interactions futures (évite perte au rerun)
                 st.session_state["last_df"] = df.copy()
                 st.session_state["last_counts"] = counts
                 if preserve_cache:
@@ -241,7 +223,7 @@ if not df.empty:
     # Sélection des statuts : multiselect (conserve l'état entre reruns)
     st.subheader("Sélectionnez les statuts à supprimer")
     status_list = summary_df["State"].tolist()
-    default_selection = [s for s in ("rejected", "disabledByMerchant", "disabledByJoom") if s in status_list]
+    default_selection = [s for s in ("rejected") if s in status_list]
 
     selected_statuses = st.multiselect(
         "Statuts (sélection multiple possible)",
@@ -335,6 +317,6 @@ if not df.empty:
                                        file_name="joom_remove_report.xlsx",
                                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-# Affichage des logs en bas
+# Affichage unique des logs en bas (un seul widget text_area avec key unique)
 st.subheader("Logs")
-log_placeholder.text_area("Logs", value=st.session_state["logs"], height=260)
+st.text_area("Logs", value=st.session_state["logs"], height=260, key="logs_area")
